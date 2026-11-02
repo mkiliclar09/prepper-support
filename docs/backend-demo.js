@@ -1,22 +1,32 @@
 // Prepper Support — demo arka ucu
 // Firebase ayarları girilmemişse kullanılır. Veriler bu tarayıcıda (localStorage) tutulur;
 // aynı tarayıcıda açılan sekmeler birbirine mesaj atabilir ve arayabilir. Gerçek kullanım için değildir.
-const KEY = "prepper-demo-v1";
+import { normalize, buildDir } from "./model.js";
+const KEY = "prepper-demo-v2";
 const now = Date.now();
-const SEED = () => ({
-  access: {
-    "mustafa@demo.local": { name: "Mustafa Kılıçlar", role: "admin" },
-    "ayse@demo.local": { name: "Ayşe Yılmaz", role: "member" },
-    "mehmet@demo.local": { name: "Mehmet Demir", role: "member" },
-    "zeynep@demo.local": { name: "Zeynep Kaya", role: "member" }
-  },
-  messages: {
-    m1: { to: "all", from: "ayse@demo.local", fromName: "Ayşe Yılmaz", text: "Herkes buradaysa toplanma noktası yine parkın önü mü?", at: now - 26 * 3600e3, participants: [] },
-    m2: { to: "all", from: "mustafa@demo.local", fromName: "Mustafa Kılıçlar", text: "Evet, park girişi. Su ve el feneri getirmeyi unutmayın.", at: now - 25.5 * 3600e3, participants: [] },
-    m3: { to: "mustafa@demo.local", from: "mehmet@demo.local", fromName: "Mehmet Demir", text: "Jeneratörün yakıtını kontrol ettim, iki gün yeter.", at: now - 3 * 3600e3, participants: ["mehmet@demo.local", "mustafa@demo.local"] }
-  },
-  files: {}, reads: {}, calls: {}, ice: {}
-});
+const SEED = () => {
+  const access = normalize({
+    members: {
+      "mustafa@demo.local": { name: "Mustafa Kılıçlar", role: "admin", groups: ["aile", "mahalle"] },
+      "ayse@demo.local": { name: "Ayşe Yılmaz", role: "member", groups: ["aile"] },
+      "mehmet@demo.local": { name: "Mehmet Demir", role: "member", groups: ["mahalle"] },
+      "zeynep@demo.local": { name: "Zeynep Kaya", role: "member", groups: ["mahalle"] },
+      "orhan@demo.local": { name: "Orhan Okuyucu", role: "member", groups: [] }
+    },
+    groups: { aile: { name: "Aile" }, mahalle: { name: "Mahalle ekibi" } }
+  });
+  const directory = {}; Object.keys(access.members).forEach(e => directory[e] = buildDir(access, e));
+  const g = id => access.groups[id].members;
+  return {
+    access, directory,
+    messages: {
+      m1: { to: "g:aile", group: "aile", from: "ayse@demo.local", fromName: "Ayşe Yılmaz", text: "Toplanma noktası yine parkın önü mü?", at: now - 26 * 3600e3, participants: g("aile") },
+      m2: { to: "g:aile", group: "aile", from: "mustafa@demo.local", fromName: "Mustafa Kılıçlar", text: "Evet, park girişi. Su ve el feneri getirin.", at: now - 25.5 * 3600e3, participants: g("aile") },
+      m3: { to: "g:mahalle", group: "mahalle", from: "mehmet@demo.local", fromName: "Mehmet Demir", text: "Jeneratörün yakıtını kontrol ettim, iki gün yeter.", at: now - 3 * 3600e3, participants: g("mahalle") }
+    },
+    files: {}, reads: {}, calls: {}, ice: {}
+  };
+};
 
 export async function createBackend() {
   const load = () => { try { return JSON.parse(localStorage.getItem(KEY)) || null; } catch (e) { return null; } };
@@ -50,8 +60,8 @@ export async function createBackend() {
   return {
     mode: "demo",
     onWriteError: null,
-    demoPeople: () => Object.entries(S.access).map(([email, m]) => ({ email, name: m.name })),
-    demoLogin(email) { const m = S.access[email]; setUser({ uid: "u_" + email.split("@")[0], email, name: m ? m.name : email, verified: true }); },
+    demoPeople: () => Object.entries(S.access.members).map(([email, m]) => ({ email, name: m.name })),
+    demoLogin(email) { const m = S.access.members[email]; setUser({ uid: "u_" + email.split("@")[0], email, name: m ? m.name : email, verified: true }); },
     demoReset() { localStorage.removeItem(KEY); S = SEED(); commit(); },
     onAuth(cb) { authCbs.add(cb); setTimeout(() => cb(user), 0); return () => authCbs.delete(cb); },
     async loginGoogle() { throw new Error("Demo modunda kişi seçerek giriş yapılır."); },
@@ -62,9 +72,10 @@ export async function createBackend() {
     async logout() { setUser(null); },
 
     watchAccess(cb) { let last = ""; const run = () => { const j = JSON.stringify(S.access); if (j !== last) { last = j; cb(clone(S.access)); } }; watchers.add(run); setTimeout(run, 0); return () => watchers.delete(run); },
-    async saveAccess(members) { S.access = clone(members); commit(); },
+    watchDir(email, cb) { let last = "x"; const run = () => { const d = S.directory[email] || null; const j = JSON.stringify(d); if (j !== last) { last = j; cb(d ? clone(d) : null); } }; watchers.add(run); setTimeout(run, 0); return () => watchers.delete(run); },
+    async saveAccess(access, dirs, removed) { S.access = clone(access); Object.assign(S.directory, clone(dirs)); (removed || []).forEach(e => delete S.directory[e]); commit(); },
 
-    watchMessages(email, cb) { return watchColl(() => S.messages, d => d.to === "all" || (d.participants || []).includes(email), cb); },
+    watchMessages(email, cb) { return watchColl(() => S.messages, d => (d.participants || []).includes(email), cb); },
     sendMessage(m) { const id = rid(); S.messages[id] = clone(m); commit(); return id; },
     async deleteMessage(id) { delete S.messages[id]; commit(); },
     putFile(f) { const id = rid(); S.files[id] = f; commit(); return { id, done: Promise.resolve() }; },

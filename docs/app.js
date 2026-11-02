@@ -1,5 +1,6 @@
 // Prepper Support — yalnızca davetli kişilerin kullandığı kapalı mesajlaşma ve arama uygulaması
 import { firebaseConfig, BOOT_ADMINS, TURN_URL, EXTRA_ICE } from "./config.js";
+import { normalize, buildDir, newGroupId } from "./model.js";
 
 /* ================= yardımcılar ================= */
 const $ = s => document.querySelector(s);
@@ -47,22 +48,27 @@ const ICON = {
 /* ================= durum ================= */
 const DEMO = !firebaseConfig.apiKey || new URLSearchParams(location.search).has("demo");
 const BOOT = DEMO ? [] : BOOT_ADMINS.map(lower);
-const ST = { api: null, me: null, access: null, msgs: new Map(), reads: {}, peer: null, online: navigator.onLine, unsubs: [], accessUnsub: null, sig: "", readTimer: null };
+const ST = { api: null, me: null, access: null, dir: null, view: null, msgs: new Map(), reads: {}, peer: null, online: navigator.onLine, unsubs: [], accessUnsub: null, dirUnsub: null, sig: "", readTimer: null };
 const isDesktop = () => innerWidth > 820;
-const myRole = () => BOOT.includes(ST.me.email) ? "admin" : (ST.access && ST.access[ST.me.email] ? ST.access[ST.me.email].role : null);
+// ST.view: { name, role, groups:[{id,name,members}], contacts:{eposta:{name,role}} }
+const myRole = () => BOOT.includes(ST.me.email) ? "admin" : (ST.view ? ST.view.role : null);
 const isAdmin = () => myRole() === "admin";
+const isGroup = p => typeof p === "string" && p.startsWith("g:");
+const groupOf = p => ST.view && ST.view.groups.find(g => "g:" + g.id === p);
 function nameOf(email) {
   email = lower(email);
-  if (ST.access && ST.access[email] && ST.access[email].name) return ST.access[email].name;
+  if (isGroup(email)) { const g = groupOf(email); return g ? g.name : "Grup"; }
+  if (ST.view && ST.view.contacts[email]) return ST.view.contacts[email].name;
+  if (ST.access && ST.access.members[email]) return ST.access.members[email].name;
   if (ST.me && email === ST.me.email) return ST.me.name || email;
   for (const m of ST.msgs.values()) if (lower(m.from) === email && m.fromName) return m.fromName;
   return email;
 }
 const safeKey = s => s.replace(/[^a-z0-9_]/g, "_");
 const dmKey = (a, b) => "dm_" + safeKey([lower(a), lower(b)].sort().join("__"));
-const keyOfPeer = p => p === "all" ? "all" : dmKey(ST.me.email, p);
-const convOf = m => m.to === "all" ? "all" : dmKey(m.from, m.to);
-const peerOf = m => m.to === "all" ? "all" : (lower(m.from) === ST.me.email ? lower(m.to) : lower(m.from));
+const keyOfPeer = p => isGroup(p) ? p : dmKey(ST.me.email, p);
+const convOf = m => isGroup(m.to) ? m.to : dmKey(m.from, m.to);
+const peerOf = m => isGroup(m.to) ? m.to : (lower(m.from) === ST.me.email ? lower(m.to) : lower(m.from));
 const convMsgs = key => [...ST.msgs.values()].filter(m => convOf(m) === key).sort((a, b) => (a.at || 0) - (b.at || 0));
 const unreadOf = key => { const r = ST.reads[key] || 0; let n = 0; for (const m of ST.msgs.values()) if (convOf(m) === key && lower(m.from) !== ST.me.email && (m.at || 0) > r) n++; return n; };
 const pendingCount = () => { let n = 0; for (const m of ST.msgs.values()) if (m._pending) n++; return n; };
@@ -92,29 +98,39 @@ function msgText(m) {
   addEventListener("popstate", () => { if (!isDesktop() && ST.peer && $("#split")) closeThread(true); });
 })();
 
-function stopData() { ST.unsubs.forEach(u => { try { u(); } catch (e) {} }); ST.unsubs = []; if (ST.accessUnsub) { ST.accessUnsub(); ST.accessUnsub = null; } ST.msgs.clear(); ST.reads = {}; ST.access = null; ST.sig = ""; }
+function stopData() { ST.unsubs.forEach(u => { try { u(); } catch (e) {} }); ST.unsubs = []; if (ST.accessUnsub) { ST.accessUnsub(); ST.accessUnsub = null; } if (ST.dirUnsub) { ST.dirUnsub(); ST.dirUnsub = null; } ST.msgs.clear(); ST.reads = {}; ST.access = null; ST.dir = null; ST.view = null; ST.sig = ""; }
 
 function onUser(u) {
   stopData();
   ST.me = u;
   if (!u) return renderLogin();
-  if (!u.verified) return renderVerify();
+  // Hesapları yönetici Firebase Console'dan açar; e-posta doğrulaması istenmez.
   ST.me.name = u.name || u.email;
-  watchAccess();
+  watchDir();
+  if (BOOT.includes(u.email)) watchAccess();
 }
-let accessRetry;
+// Herkes kendi rehberini okur; yöneticiler ayrıca tüm listeyi izler.
+function watchDir() {
+  ST.dirUnsub = ST.api.watchDir(ST.me.email, d => {
+    ST.dir = d;
+    if (d && d.role === "admin" && !ST.accessUnsub) watchAccess();
+    if (d && d.role !== "admin" && ST.accessUnsub && !BOOT.includes(ST.me.email)) { ST.accessUnsub(); ST.accessUnsub = null; ST.access = null; }
+    refreshView();
+  }, e => toast("Rehber okunamadı: " + errText(e)));
+}
 function watchAccess() {
-  clearTimeout(accessRetry);
-  ST.accessUnsub = ST.api.watchAccess(members => {
-    ST.access = members || {};
-    if (!myRole()) { renderWait(); return; }
-    if (ST.access[ST.me.email] && ST.access[ST.me.email].name) ST.me.name = ST.access[ST.me.email].name;
-    if (!$("#app")) startApp(); else { renderConvs(); renderThread(); }
-  }, e => {
-    // Ekipte olmayan kişi listeyi okuyamaz; yönetici ekleyene kadar bekleme ekranı gösterilir ve ara ara tekrar denenir.
-    if (e && e.code === "permission-denied") { renderWait(); ST.accessUnsub = null; accessRetry = setTimeout(watchAccess, 20000); }
-    else toast("Kişi listesi okunamadı: " + errText(e));
-  });
+  ST.accessUnsub = ST.api.watchAccess(a => { ST.access = normalize(a, BOOT); refreshView(); },
+    e => { if (!(e && e.code === "permission-denied")) toast("Kişi listesi okunamadı: " + errText(e)); });
+}
+function refreshView() {
+  const adminView = ST.access && (BOOT.includes(ST.me.email) || (ST.dir && ST.dir.role === "admin"));
+  ST.view = adminView ? buildDir(ST.access, ST.me.email) : ST.dir;
+  if (!ST.view) { if (!BOOT.includes(ST.me.email) || ST.access) renderWait(); return; }
+  if (ST.view.name) ST.me.name = ST.view.name;
+  if (ST.peer && !isGroup(ST.peer) && !ST.view.contacts[ST.peer] && !convMsgs(keyOfPeer(ST.peer)).length) ST.peer = null;
+  if (ST.peer && isGroup(ST.peer) && !groupOf(ST.peer)) ST.peer = null;
+  if (!$("#app")) startApp();
+  else { const ab = $("#adminBtn"); if (!!ab !== isAdmin()) { $("#app").remove(); startApp(); return; } ST.sig = ""; renderConvs(); renderThread(); paintSplit(); }
 }
 
 /* ================= giriş ekranları ================= */
@@ -131,16 +147,17 @@ function renderLogin(mode = "in") {
   }
   const up = mode === "up";
   gate(`<h1>${up ? "Hesap oluştur" : "Giriş yap"}</h1>
-    <p class="muted">Yalnızca yöneticinin davet ettiği kişiler mesajları görebilir.</p>
+    <p class="muted">Yalnızca yöneticinin davet ettiği kişiler girebilir.</p>
     <button class="btn google" id="gBtn" type="button"><svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="#4285F4" d="M23 12.3c0-.8-.1-1.6-.2-2.3H12v4.4h6.2a5.3 5.3 0 01-2.3 3.5v2.9h3.7c2.2-2 3.4-5 3.4-8.5z"/><path fill="#34A853" d="M12 23.5c3.1 0 5.7-1 7.6-2.8l-3.7-2.9c-1 .7-2.4 1.1-3.9 1.1-3 0-5.5-2-6.4-4.7H1.8v3A11.5 11.5 0 0012 23.5z"/><path fill="#FBBC05" d="M5.6 14.2a6.9 6.9 0 010-4.4v-3H1.8a11.5 11.5 0 000 10.4z"/><path fill="#EA4335" d="M12 4.9c1.7 0 3.2.6 4.4 1.7l3.3-3.3A11.5 11.5 0 001.8 6.8l3.8 3C6.5 7 9 4.9 12 4.9z"/></svg>Google ile devam et</button>
-    <div class="or"><span>veya e-posta ile</span></div>
+    <div class="or"><span>veya e-posta ve şifre ile</span></div>
     <form id="fAuth" class="form">
       ${up ? '<label>Ad Soyad<input id="fName" autocomplete="name" required maxlength="60"></label>' : ""}
       <label>E-posta<input id="fMail" type="email" autocomplete="email" required></label>
       <label>Şifre<input id="fPass" type="password" autocomplete="${up ? "new-password" : "current-password"}" required minlength="6"></label>
       <button class="btn" type="submit">${up ? "Hesap oluştur" : "Giriş yap"}</button>
     </form>
-    <div class="row-links">${up ? '<button class="linkbtn" id="toIn" type="button">Hesabım var, giriş yap</button>' : '<button class="linkbtn" id="toUp" type="button">Hesap oluştur</button><button class="linkbtn" id="forgot" type="button">Şifremi unuttum</button>'}</div>`);
+    <div class="row-links"><button class="linkbtn" id="forgot" type="button">Şifremi unuttum</button></div>
+    <p class="muted small">Hesabınızı yönetici açar. Size verilen e-posta ve şifreyle giriş yapın.</p>`);
   $("#gBtn").onclick = async () => { try { await ST.api.loginGoogle(); } catch (e) { toast(errText(e)); } };
   $("#fAuth").onsubmit = async e => {
     e.preventDefault(); const b = e.submitter; b.disabled = true;
@@ -160,10 +177,10 @@ function renderVerify() {
   $("#vOut").onclick = () => ST.api.logout();
 }
 function renderWait() {
-  if ($("#app")) { endCall(null, true); }
+  if ($("#app")) { endCall(null, true); ST.unsubs.forEach(u => { try { u(); } catch (e) {} }); ST.unsubs = []; ST.msgs.clear(); ST.peer = null; }
   gate(`<h1>Erişim izni bekleniyor</h1><p class="muted">Bu uygulamayı yalnızca davetli kişiler kullanabilir. Yöneticiden <b>${esc(ST.me.email)}</b> adresini kişi listesine eklemesini isteyin. Eklendiğinizde bu ekran kendiliğinden açılır.</p>
     <button class="btn" id="wTry" type="button">Tekrar dene</button><div class="row-links"><button class="linkbtn" id="wOut" type="button">Başka hesapla giriş yap</button></div>`);
-  $("#wTry").onclick = () => { if (ST.accessUnsub) ST.accessUnsub(); watchAccess(); };
+  $("#wTry").onclick = () => onUser(ST.me);
   $("#wOut").onclick = () => ST.api.logout();
 }
 
@@ -174,13 +191,13 @@ function startApp() {
       <div class="brand"><img src="icons/icon-192.png" alt="" width="30" height="30"><b>Prepper Support</b></div>
       <span class="net" id="net" role="status"></span>
       <div class="top-r">
-        ${isAdmin() ? `<button class="ibtn" id="adminBtn" type="button" aria-label="Kişiler ve yetkiler" title="Kişiler ve yetkiler">${ICON.users}</button>` : ""}
+        ${isAdmin() ? `<button class="ibtn" id="adminBtn" type="button" aria-label="Kişiler ve gruplar" title="Kişiler ve gruplar">${ICON.users}</button>` : ""}
         <button class="ibtn" id="outBtn" type="button" aria-label="Çıkış yap" title="Çıkış yap (${esc(ST.me.email)})">${ICON.out}</button>
       </div>
     </header>
     ${DEMO ? '<div class="demobar">Demo modu · veriler yalnızca bu tarayıcıda · <b>' + esc(ST.me.name) + '</b> olarak girdiniz</div>' : ""}
     <div class="split" id="split">
-      <aside class="side" aria-label="Sohbetler"><div class="side-h">Sohbetler</div><div id="convList" class="convlist"></div><div class="side-f" id="sideNote"></div></aside>
+      <aside class="side" aria-label="Sohbetler"><div id="convList" class="convlist"></div><div class="side-f" id="sideNote"></div></aside>
       <section class="thread" id="thread" aria-label="Konuşma">
         <div class="th-h" id="thHead"></div>
         <div class="th-b" id="thBody" aria-live="polite"></div>
@@ -195,7 +212,7 @@ function startApp() {
         </form>
       </section>
     </div></div>`;
-  if (isDesktop() && !ST.peer) ST.peer = "all";
+  if (isDesktop() && !ST.peer) ST.peer = defaultPeer();
   $("#outBtn").onclick = () => { endCall("ended"); ST.peer = null; ST.api.logout(); };
   if ($("#adminBtn")) $("#adminBtn").onclick = openAdmin;
   const ta = $("#thText");
@@ -213,7 +230,7 @@ function startApp() {
   th.addEventListener("dragover", e => { e.preventDefault(); th.classList.add("drop"); });
   th.addEventListener("dragleave", e => { if (!th.contains(e.relatedTarget)) th.classList.remove("drop"); });
   th.addEventListener("drop", e => { e.preventDefault(); th.classList.remove("drop"); if (e.dataTransfer.files.length) sendFiles([...e.dataTransfer.files]); });
-  addEventListener("resize", () => { if (isDesktop() && !ST.peer) { ST.peer = "all"; ST.sig = ""; } paintSplit(); renderThread(); });
+  addEventListener("resize", () => { if (isDesktop() && !ST.peer) { ST.peer = defaultPeer(); ST.sig = ""; } paintSplit(); renderThread(); });
   startData();
   paintNet(); paintSplit(); renderConvs(); renderThread();
 }
@@ -251,7 +268,7 @@ function paintSplit() { const s = $("#split"); if (s) s.classList.toggle("show-t
 const viewing = key => $("#app") && !document.hidden && ST.peer && keyOfPeer(ST.peer) === key && (isDesktop() || $("#split").classList.contains("show-thread"));
 function incoming(m) {
   const key = convOf(m); if (viewing(key)) return;
-  const who = nameOf(m.from) + (m.to === "all" ? " · Tüm grup" : "");
+  const who = nameOf(m.from) + (isGroup(m.to) ? " · " + nameOf(m.to) : "");
   toast(who + ": " + String(msgText(m)).slice(0, 90));
   try {
     if (document.hidden && "Notification" in window && Notification.permission === "granted" && navigator.serviceWorker)
@@ -273,26 +290,31 @@ function markRead() {
 /* --- sohbet listesi --- */
 function people() {
   const s = new Map();
-  Object.entries(ST.access || {}).forEach(([e, m]) => { if (e !== ST.me.email) s.set(e, (m && m.name) || e); });
-  BOOT.forEach(e => { if (e !== ST.me.email && !s.has(e)) s.set(e, nameOf(e)); });
-  for (const m of ST.msgs.values()) { const p = peerOf(m); if (p !== "all" && p !== ST.me.email && !s.has(p)) s.set(p, nameOf(p)); }
-  return [...s].map(([email, name]) => ({ email, name }));
+  Object.entries(ST.view.contacts || {}).forEach(([e, c]) => s.set(e, c.name || e));
+  // Eski yazışmalar listede kalsın (kişi artık görünmüyorsa da geçmiş okunabilir)
+  for (const m of ST.msgs.values()) { const p = peerOf(m); if (!isGroup(p) && p !== ST.me.email && !s.has(p)) s.set(p, nameOf(p)); }
+  return [...s].map(([email, name]) => ({ email, name, gone: !ST.view.contacts[email] }));
 }
 function convRows() {
-  const rows = [{ peer: "all", name: "Tüm grup", all: true }, ...people().map(p => ({ peer: p.email, name: p.name }))];
+  const groups = ST.view.groups.map(g => ({ peer: "g:" + g.id, name: g.name, group: true, count: g.members.length }));
+  const rows = [...groups, ...people().map(p => ({ peer: p.email, name: p.name, gone: p.gone }))];
   rows.forEach(r => { const l = convMsgs(keyOfPeer(r.peer)); r.last = l[l.length - 1] || null; r.unread = unreadOf(keyOfPeer(r.peer)); });
-  const all = rows.shift();
-  rows.sort((a, b) => ((b.last && b.last.at) || 0) - ((a.last && a.last.at) || 0) || a.name.localeCompare(b.name, "tr"));
-  return [all, ...rows];
+  const by = (a, b) => ((b.last && b.last.at) || 0) - ((a.last && a.last.at) || 0) || a.name.localeCompare(b.name, "tr");
+  return [...rows.filter(r => r.group).sort(by), ...rows.filter(r => !r.group).sort(by)];
 }
+const defaultPeer = () => { const r = ST.view ? convRows() : []; return r.length ? r[0].peer : null; };
+const gIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0113 0M16 4.5a3.5 3.5 0 010 7M18 14a6 6 0 013.5 6"/></svg>';
 function renderConvs() {
   const box = $("#convList"); if (!box) return;
-  box.innerHTML = convRows().map(r => {
-    const prev = r.last ? (r.all && lower(r.last.from) !== ST.me.email ? nameOf(r.last.from) + ": " : lower(r.last.from) === ST.me.email ? "Siz: " : "") + msgText(r.last) : (r.all ? "Grubun ortak kanalı" : "Henüz mesaj yok");
+  const rows = convRows();
+  const firstDm = rows.findIndex(r => !r.group);
+  box.innerHTML = (rows.length ? "" : `<div class="side-empty">${isAdmin() ? "Henüz grup yok. Sağ üstteki kişiler simgesinden grup oluşturup kişileri ekleyin." : "Henüz bir gruba eklenmediniz. Yöneticiniz sizi bir gruba eklediğinde kişiler burada görünür."}</div>`) + rows.map((r, i) => {
+    const sec = i === 0 && r.group ? '<div class="side-sec">Gruplar</div>' : i === firstDm ? '<div class="side-sec">Kişiler</div>' : "";
+    const prev = r.last ? (r.group && lower(r.last.from) !== ST.me.email ? nameOf(r.last.from) + ": " : lower(r.last.from) === ST.me.email ? "Siz: " : "") + msgText(r.last) : (r.group ? r.count + " kişi" : "Henüz mesaj yok");
     return `<button class="conv${r.unread ? " unread" : ""}" type="button" data-peer="${esc(r.peer)}" aria-current="${r.peer === ST.peer}">
-      <span class="av${r.all ? " all" : ""}" style="--c:${colorOf(r.name)}">${r.all ? "GRUP" : esc(initials(r.name))}</span>
+      <span class="av${r.group ? " grp" : ""}" style="--c:${colorOf(r.name)}">${r.group ? gIcon : esc(initials(r.name))}</span>
       <span class="cmid"><span class="cn">${esc(r.name)}</span><span class="cp">${r.last && r.last._pending ? ICON.clock : ""}${esc(prev)}</span></span>
-      <span class="cr">${r.last ? esc(shortWhen(r.last.at)) : ""}${r.unread ? `<span class="badge">${r.unread > 99 ? "99+" : r.unread}</span>` : ""}</span></button>`;
+      <span class="cr">${r.last ? esc(shortWhen(r.last.at)) : ""}${r.unread ? `<span class="badge">${r.unread > 99 ? "99+" : r.unread}</span>` : ""}</span></button>`.replace(/^/, sec);
   }).join("");
   box.querySelectorAll("[data-peer]").forEach(b => b.onclick = () => openThread(b.dataset.peer));
   const note = $("#sideNote");
@@ -320,18 +342,19 @@ function renderThread() {
   const th = $("#thread");
   if (!ST.peer) { th.classList.add("empty"); head.innerHTML = ""; $("#thBody").innerHTML = '<div class="th-empty">Soldan bir sohbet seçin.</div>'; return; }
   th.classList.remove("empty");
-  const rows = convRows(), cur = rows.find(r => r.peer === ST.peer) || { peer: ST.peer, name: nameOf(ST.peer) };
+  const rows = convRows(), cur = rows.find(r => r.peer === ST.peer) || { peer: ST.peer, name: nameOf(ST.peer), gone: true };
   const key = keyOfPeer(ST.peer);
-  const count = new Set([...Object.keys(ST.access || {}), ...BOOT]).size;
-  const hsig = ST.peer + "|" + cur.name + "|" + count;
+  const grp = cur.group ? groupOf(ST.peer) : null;
+  const sub = grp ? grp.members.map(e => e === ST.me.email ? "Siz" : nameOf(e)).join(", ") : cur.gone ? "Artık ortak bir grubunuz yok" : "Özel mesaj · yalnızca ikiniz görürsünüz";
+  const hsig = ST.peer + "|" + cur.name + "|" + sub;
   if (head.dataset.sig !== hsig) {
     head.dataset.sig = hsig;
     head.innerHTML = `<button class="ibtn back" id="thBack" type="button" aria-label="Sohbetlere dön">${ICON.back}</button>
-      <span class="av${cur.all ? " all" : ""}" style="--c:${colorOf(cur.name)}">${cur.all ? "GRUP" : esc(initials(cur.name))}</span>
-      <span class="cmid"><span class="tn">${esc(cur.name)}</span><span class="ts">${cur.all ? count + " kişi · herkes görür" : "Özel mesaj · yalnızca ikiniz görürsünüz"}</span></span>
-      ${cur.all ? "" : `<span class="thcall"><button type="button" class="ibtn" id="thCallA" aria-label="${esc(cur.name)} ile sesli arama" title="Sesli arama">${ICON.audio}</button><button type="button" class="ibtn" id="thCallV" aria-label="${esc(cur.name)} ile görüntülü arama" title="Görüntülü arama">${ICON.video}</button></span>`}`;
+      <span class="av${cur.group ? " grp" : ""}" style="--c:${colorOf(cur.name)}">${cur.group ? gIcon : esc(initials(cur.name))}</span>
+      <span class="cmid"><span class="tn">${esc(cur.name)}</span><span class="ts" title="${esc(sub)}">${esc(sub)}</span></span>
+      ${cur.group || cur.gone ? "" : `<span class="thcall"><button type="button" class="ibtn" id="thCallA" aria-label="${esc(cur.name)} ile sesli arama" title="Sesli arama">${ICON.audio}</button><button type="button" class="ibtn" id="thCallV" aria-label="${esc(cur.name)} ile görüntülü arama" title="Görüntülü arama">${ICON.video}</button></span>`}`;
     $("#thBack").onclick = () => closeThread(false);
-    if (!cur.all) { $("#thCallA").onclick = () => startCall(ST.peer, "audio"); $("#thCallV").onclick = () => startCall(ST.peer, "video"); }
+    if (!cur.group && !cur.gone) { $("#thCallA").onclick = () => startCall(ST.peer, "audio"); $("#thCallV").onclick = () => startCall(ST.peer, "video"); }
   }
   const list = convMsgs(key);
   const sig = key + "|" + list.map(m => m.id + (m._pending ? "p" : "")).join(",").length + "|" + list.length + "|" + (list.length ? list[list.length - 1].id + (list[list.length - 1]._pending ? "p" : "") : "") + "|" + pendingCount() + "|" + dayLabel(Date.now());
@@ -342,7 +365,7 @@ function renderThread() {
   list.forEach(m => {
     const dk = dayKey(m.at || 0); if (dk !== lastDay) { html += `<div class="dsep"><span>${esc(dayLabel(m.at || 0))}</span></div>`; lastDay = dk; }
     const mine = lower(m.from) === ST.me.email, nm = nameOf(m.from);
-    const canDel = mine || (isAdmin() && m.to === "all");
+    const canDel = mine || (isAdmin() && isGroup(m.to));
     const stamp = `<span class="t">${m._pending ? `<span class="pend" title="${ST.online ? "Gönderiliyor" : "İnternet gelince gönderilecek"}">${ICON.clock}</span>` : mine ? `<span class="okk">${ICON.check}</span>` : ""}${esc(hhmm(m.at || 0))}${canDel && !m.call ? `<button type="button" data-del="${esc(m.id)}">Sil</button>` : ""}</span>`;
     if (m.call) {
       const c = m.call, ok = c.st === "answered", other = mine ? lower(m.to) : lower(m.from);
@@ -353,9 +376,10 @@ function renderThread() {
     if (a && (a.type || "").startsWith("image/")) ah = `<button type="button" class="mimg" data-att="${esc(m.id)}" aria-label="Fotoğrafı büyüt">${a.thumb ? `<img src="${a.thumb}" alt="${esc(a.name)}">` : "Fotoğraf"}</button>`;
     else if (a && (a.type || "").startsWith("audio/")) ah = `<div class="aud"><button type="button" class="play" data-aud="${esc(m.id)}" aria-label="Sesli mesajı oynat">▶</button><span>Sesli mesaj</span><b class="num">${fmtSec(a.dur)}</b></div>`;
     else if (a) ah = `<button type="button" class="mfile" data-att="${esc(m.id)}"><span class="fx">${esc((String(a.name).split(".").pop() || "DOSYA").toUpperCase().slice(0, 4))}</span><span class="fn"><b>${esc(a.name)}</b><small>${fmtSize(a.size || 0)}</small></span></button>`;
-    html += `<div class="bub${mine ? " mine" : ""}${a ? " hasatt" : ""}${m._pending ? " pending" : ""}" style="--c:${colorOf(nm)}">${!mine && m.to === "all" ? `<span class="who">${esc(nm)}</span>` : ""}${ah}${m.text ? `<p>${esc(m.text)}</p>` : ""}${stamp}</div>`;
+    html += `<div class="bub${mine ? " mine" : ""}${a ? " hasatt" : ""}${m._pending ? " pending" : ""}" style="--c:${colorOf(nm)}">${!mine && isGroup(m.to) ? `<span class="who">${esc(nm)}</span>` : ""}${ah}${m.text ? `<p>${esc(m.text)}</p>` : ""}${stamp}</div>`;
   });
-  body.innerHTML = html || `<div class="th-empty">${cur.all ? "Gruba ilk mesajı yazın. Buradaki mesajları listedeki herkes görür." : esc(cur.name) + " ile henüz mesajlaşmadınız."}</div>`;
+  body.innerHTML = html || `<div class="th-empty">${cur.group ? "Gruba ilk mesajı yazın. Buradaki mesajları yalnızca bu grubun üyeleri görür." : esc(cur.name) + " ile henüz mesajlaşmadınız."}</div>`;
+  $("#thForm").hidden = !!cur.gone;
   body.querySelectorAll("[data-del]").forEach(b => { let armed = false; b.onclick = async () => {
     if (!armed) { armed = true; b.textContent = "Silinsin mi?"; setTimeout(() => { armed = false; b.textContent = "Sil"; }, 3000); return; }
     const mm = ST.msgs.get(b.dataset.del);
@@ -369,16 +393,22 @@ function renderThread() {
 }
 
 /* --- gönderme --- */
+// Alıcı bilgisi: grup mesajını yalnızca grubun o anki üyeleri görür
+function target(peer) {
+  if (isGroup(peer)) { const g = groupOf(peer); if (!g) return null; return { to: peer, group: g.id, participants: g.members.slice() }; }
+  peer = lower(peer); if (!ST.view.contacts[peer]) return null;
+  return { to: peer, participants: [ST.me.email, peer] };
+}
 function sendMsg(peer, text, att, call) {
   text = String(text || "").trim(); if (!text && !att && !call) return false;
-  peer = peer === "all" ? "all" : lower(peer);
-  const m = { to: peer, from: ST.me.email, fromName: ST.me.name, text, at: Date.now(), participants: peer === "all" ? [] : [ST.me.email, peer] };
+  const t = target(peer); if (!t) { toast("Bu sohbete artık mesaj gönderemezsiniz."); return false; }
+  const m = { ...t, from: ST.me.email, fromName: ST.me.name, text, at: Date.now() };
   if (att) m.att = att; if (call) m.call = call;
   try { ST.api.sendMessage(m); return true; } catch (e) { toast(errText(e)); return false; }
 }
 function upload(peer, data, meta) {
-  peer = peer === "all" ? "all" : lower(peer);
-  const r = ST.api.putFile({ data, name: meta.name, type: meta.type, size: data.length, at: Date.now(), uid: ST.me.uid, from: ST.me.email, to: peer, participants: peer === "all" ? [] : [ST.me.email, peer] });
+  const t = target(peer); if (!t) throw new Error("Bu sohbete artık gönderilemez");
+  const r = ST.api.putFile({ data, name: meta.name, type: meta.type, size: data.length, at: Date.now(), uid: ST.me.uid, from: ST.me.email, ...t });
   const att = { id: r.id, name: meta.name, type: meta.type, size: meta.size || data.length };
   if (meta.thumb) att.thumb = meta.thumb; if (meta.dur) att.dur = meta.dur;
   return att;
@@ -484,34 +514,61 @@ async function recDone() {
 
 /* ================= kişiler ve yetkiler (yönetici) ================= */
 function openAdmin() {
+  if (!ST.access) { toast("Kişi listesi yükleniyor, birazdan tekrar deneyin."); return; }
   const dlg = document.createElement("div"); dlg.className = "modal"; dlg.setAttribute("role", "dialog"); dlg.setAttribute("aria-modal", "true"); dlg.setAttribute("aria-labelledby", "admT");
   document.body.appendChild(dlg);
-  let draft = JSON.parse(JSON.stringify(ST.access || {}));
-  const close = () => { dlg.remove(); removeEventListener("keydown", k); };
+  const orig = ST.access;
+  const draft = JSON.parse(JSON.stringify({ members: orig.members, groups: Object.fromEntries(Object.entries(orig.groups).map(([id, g]) => [id, { name: g.name }])) }));
+  let tab = Object.keys(draft.groups).length ? "groups" : "people", dirty = false;
+  const close = () => { if (dirty && !confirm("Kaydedilmemiş değişiklikler var. Yine de kapatılsın mı?")) return; dlg.remove(); removeEventListener("keydown", k); };
   const k = e => { if (e.key === "Escape") close(); };
   addEventListener("keydown", k);
+  const touch = () => { dirty = true; const m = $("#admMsg"); if (m) m.textContent = "Kaydetmeyi unutmayın."; };
+  const sortedPeople = () => Object.entries(draft.members).sort((a, b) => (a[1].name || a[0]).localeCompare(b[1].name || b[0], "tr"));
+  const sortedGroups = () => Object.entries(draft.groups).sort((a, b) => a[1].name.localeCompare(b[1].name, "tr"));
+  const gCount = id => Object.values(draft.members).filter(m => (m.groups || []).includes(id)).length;
   const paint = () => {
-    const rows = Object.entries(draft).sort((a, b) => (a[1].name || a[0]).localeCompare(b[1].name || b[0], "tr"));
-    const boots = BOOT.filter(e => !draft[e]);
-    dlg.innerHTML = `<div class="sheet"><div class="sheet-h"><h2 id="admT">Kişiler ve yetkiler</h2><button class="ibtn" id="admX" type="button" aria-label="Kapat">×</button></div>
-      <p class="muted">Yalnızca bu listedeki e-posta adresleri uygulamayı kullanabilir. Kişi, listeye eklediğiniz e-postayla (Google veya e-posta/şifre) giriş yapmalı.</p>
-      <form class="addrow" id="admAdd"><input id="aName" placeholder="Ad Soyad" required maxlength="60" aria-label="Ad Soyad"><input id="aMail" type="email" placeholder="E-posta" required aria-label="E-posta">
+    const people = sortedPeople(), groups = sortedGroups();
+    const peopleHtml = `<form class="addrow" id="admAdd"><input id="aName" placeholder="Ad Soyad" required maxlength="60" aria-label="Ad Soyad"><input id="aMail" type="email" placeholder="E-posta" required aria-label="E-posta">
         <select id="aRole" aria-label="Rol"><option value="member">Üye</option><option value="admin">Yönetici</option></select><button class="btn sm" type="submit">Ekle</button></form>
-      <div class="mlist">${boots.map(e => `<div class="mrow"><span class="av" style="--c:${colorOf(e)}">${esc(initials(nameOf(e)))}</span><span class="cmid"><b>${esc(nameOf(e))}</b><small>${esc(e)}</small></span><span class="tag">Kalıcı yönetici</span></div>`).join("")}
-      ${rows.map(([e, m]) => `<div class="mrow"><span class="av" style="--c:${colorOf(m.name || e)}">${esc(initials(m.name || e))}</span><span class="cmid"><b>${esc(m.name || e)}</b><small>${esc(e)}</small></span>
-        ${BOOT.includes(e) ? '<span class="tag">Kalıcı yönetici</span>' : `<select data-role="${esc(e)}" aria-label="${esc(m.name)} rolü"><option value="member"${m.role !== "admin" ? " selected" : ""}>Üye</option><option value="admin"${m.role === "admin" ? " selected" : ""}>Yönetici</option></select><button class="linkbtn danger" type="button" data-rm="${esc(e)}">Çıkar</button>`}</div>`).join("")}</div>
-      <div class="sheet-f"><span class="muted" id="admMsg"></span><button class="btn ghost" type="button" id="admC">Vazgeç</button><button class="btn" type="button" id="admS">Kaydet</button></div></div>`;
+      <div class="mlist">${people.map(([e, m]) => `<div class="mrow"><span class="av" style="--c:${colorOf(m.name || e)}">${esc(initials(m.name || e))}</span>
+        <span class="cmid"><b>${esc(m.name || e)}</b><small>${esc(e)}</small><small class="gl">${(m.groups || []).filter(id => draft.groups[id]).map(id => esc(draft.groups[id].name)).join(" · ") || (m.role === "admin" ? "Yönetici · herkesi görür" : "Hiçbir grupta değil")}</small></span>
+        ${BOOT.includes(e) ? '<span class="tag">Kalıcı yönetici</span>' : `<select data-role="${esc(e)}" aria-label="${esc(m.name)} rolü"><option value="member"${m.role !== "admin" ? " selected" : ""}>Üye</option><option value="admin"${m.role === "admin" ? " selected" : ""}>Yönetici</option></select><button class="linkbtn danger" type="button" data-rm="${esc(e)}">Çıkar</button>`}</div>`).join("") || '<div class="mrow muted">Henüz kişi yok.</div>'}</div>`;
+    const groupsHtml = `<form class="addrow g" id="admG"><input id="gName" placeholder="Yeni grup adı (ör. Aile, Mahalle ekibi)" required maxlength="40" aria-label="Grup adı"><button class="btn sm" type="submit">Grup oluştur</button></form>
+      ${groups.map(([id, g]) => `<div class="gcard"><div class="gcard-h"><span class="av grp sm" style="--c:${colorOf(g.name)}">${gIcon}</span><input class="gname" data-gname="${id}" value="${esc(g.name)}" maxlength="40" aria-label="Grup adı"><span class="muted gcnt">${gCount(id)} kişi</span><button class="linkbtn danger" type="button" data-gdel="${id}">Sil</button></div>
+        <div class="gmembers">${people.map(([e, m]) => `<label class="chk"><input type="checkbox" data-g="${id}" data-e="${esc(e)}"${(m.groups || []).includes(id) ? " checked" : ""}><span>${esc(m.name || e)}</span></label>`).join("") || '<span class="muted">Önce Kişiler sekmesinden kişi ekleyin.</span>'}</div></div>`).join("") || '<p class="muted">Henüz grup yok. Yukarıdan bir grup oluşturup üyelerini işaretleyin.</p>'}`;
+    dlg.innerHTML = `<div class="sheet"><div class="sheet-h"><h2 id="admT">Kişiler ve gruplar</h2><button class="ibtn" id="admX" type="button" aria-label="Kapat">×</button></div>
+      <div class="tabs" role="tablist"><button type="button" role="tab" data-tab="groups" aria-selected="${tab === "groups"}">Gruplar <span>${groups.length}</span></button><button type="button" role="tab" data-tab="people" aria-selected="${tab === "people"}">Kişiler <span>${people.length}</span></button></div>
+      <p class="muted hint">${tab === "groups" ? "Herkes yalnızca kendi gruplarındaki kişileri görür ve onlarla yazışır. Yöneticiler herkesi görür." : "Önce kişiyi Firebase → Authentication → Users → Add user ile e-posta ve şifreyle açın, sonra aynı e-postayı buraya ekleyin."}</p>
+      <div class="tabbody">${tab === "groups" ? groupsHtml : peopleHtml}</div>
+      <div class="sheet-f"><span class="muted" id="admMsg">${dirty ? "Kaydetmeyi unutmayın." : ""}</span><button class="btn ghost" type="button" id="admC">Kapat</button><button class="btn" type="button" id="admS">Kaydet</button></div></div>`;
     $("#admX").onclick = close; $("#admC").onclick = close;
     dlg.onclick = e => { if (e.target === dlg) close(); };
-    $("#admAdd").onsubmit = e => { e.preventDefault(); const em = lower($("#aMail").value); if (!em.includes("@")) return;
-      draft[em] = { name: $("#aName").value.trim(), role: $("#aRole").value }; paint(); $("#admMsg").textContent = "Kaydetmeyi unutmayın."; };
-    dlg.querySelectorAll("[data-role]").forEach(s => s.onchange = () => { draft[s.dataset.role].role = s.value; $("#admMsg").textContent = "Kaydetmeyi unutmayın."; });
-    dlg.querySelectorAll("[data-rm]").forEach(b => b.onclick = () => { if (b.dataset.rm === ST.me.email && !BOOT.includes(ST.me.email)) { toast("Kendinizi listeden çıkaramazsınız."); return; } delete draft[b.dataset.rm]; paint(); $("#admMsg").textContent = "Kaydetmeyi unutmayın."; });
-    $("#admS").onclick = async () => { const b = $("#admS"); b.disabled = true;
-      try { await ST.api.saveAccess(draft); toast("Kişi listesi kaydedildi"); close(); } catch (e) { toast("Kaydedilemedi: " + errText(e)); b.disabled = false; } };
+    dlg.querySelectorAll("[data-tab]").forEach(b => b.onclick = () => { tab = b.dataset.tab; paint(); });
+    const on = (sel, ev, fn) => dlg.querySelectorAll(sel).forEach(el => el[ev] = () => fn(el));
+    if (tab === "people") {
+      $("#admAdd").onsubmit = e => { e.preventDefault(); const em = lower($("#aMail").value); if (!em.includes("@")) return;
+        const prev = draft.members[em]; draft.members[em] = { name: $("#aName").value.trim(), role: $("#aRole").value, groups: prev ? prev.groups : [] }; touch(); paint(); setTimeout(() => $("#aName") && $("#aName").focus(), 0); };
+      on("[data-role]", "onchange", el => { draft.members[el.dataset.role].role = el.value; touch(); paint(); });
+      on("[data-rm]", "onclick", el => { const e = el.dataset.rm; if (e === ST.me.email) { toast("Kendinizi listeden çıkaramazsınız."); return; } delete draft.members[e]; touch(); paint(); });
+    } else {
+      $("#admG").onsubmit = e => { e.preventDefault(); const n = $("#gName").value.trim(); if (!n) return; draft.groups[newGroupId()] = { name: n }; touch(); paint(); };
+      on("[data-gname]", "oninput", el => { draft.groups[el.dataset.gname].name = el.value.trim() || "Grup"; touch(); });
+      on("[data-gdel]", "onclick", el => { const id = el.dataset.gdel; if (!confirm(`"${draft.groups[id].name}" grubu silinsin mi? Grubun eski mesajları üyelerde kalır.`)) return;
+        delete draft.groups[id]; Object.values(draft.members).forEach(m => m.groups = (m.groups || []).filter(x => x !== id)); touch(); paint(); });
+      on("[data-g]", "onchange", el => { const m = draft.members[el.dataset.e], id = el.dataset.g; m.groups = (m.groups || []).filter(x => x !== id); if (el.checked) m.groups.push(id);
+        touch(); const c = el.closest(".gcard").querySelector(".gcnt"); if (c) c.textContent = gCount(id) + " kişi"; });
+    }
+    $("#admS").onclick = async () => {
+      const b = $("#admS"); b.disabled = true;
+      const access = normalize(draft, BOOT);
+      const dirs = {}; Object.keys(access.members).forEach(e => dirs[e] = buildDir(access, e));
+      const removed = Object.keys(orig.members).filter(e => !access.members[e]);
+      try { await ST.api.saveAccess(access, dirs, removed); dirty = false; toast("Kaydedildi"); close(); }
+      catch (e) { toast("Kaydedilemedi: " + errText(e)); b.disabled = false; }
+    };
   };
   paint();
-  setTimeout(() => { const i = $("#aName"); if (i) i.focus(); }, 30);
 }
 
 /* ================= birebir arama (sesli / görüntülü, WebRTC) ================= */
@@ -631,7 +688,7 @@ function onIncomingCall(d) {
   if (d.status !== "ringing" || CALL.seen.has(d.id) || Date.now() - (d.createdAt || 0) > RING_MS + 5000) return;
   CALL.seen.add(d.id);
   if (CALL.st) { ST.api.updateCall(d.id, { status: "busy", updatedAt: Date.now() }).catch(() => {}); return; }
-  Object.assign(CALL, { st: "incoming", role: "callee", id: d.id, call: d, peer: lower(d.from), peerName: nameOf(d.from) || d.fromName, type: d.type || "audio", muted: false, camOff: false, logged: false, qIce: [], endTxt: "" });
+  Object.assign(CALL, { st: "incoming", role: "callee", id: d.id, call: d, peer: lower(d.from), peerName: ST.view && ST.view.contacts[lower(d.from)] ? nameOf(d.from) : (d.fromName || d.from), type: d.type || "audio", muted: false, camOff: false, logged: false, qIce: [], endTxt: "" });
   callPaint(); ringTone(true);
   try { if (document.hidden && "Notification" in window && Notification.permission === "granted" && navigator.serviceWorker)
     navigator.serviceWorker.ready.then(r => r.showNotification("Gelen arama · " + CALL.peerName, { body: (CALL.type === "video" ? "Görüntülü" : "Sesli") + " arama. Açmak için dokunun.", icon: "icons/icon-192.png", tag: "call-" + d.id, requireInteraction: true })); } catch (e) {}

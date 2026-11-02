@@ -1,44 +1,72 @@
 rules_version = '2';
-// Prepper Support — Firestore güvenlik kuralları
-// Kişi listesi: config/access belgesi → { members: { "eposta": { name, role } } }, role: "admin" | "member"
-// Listede olmayan hiç kimse hiçbir veriyi okuyamaz ve yazamaz.
+// Prepper Support — Firestore güvenlik kuralları (gruplu sürüm)
+// config/access (yalnızca yöneticiler okur):
+//   { members: { "eposta": { name, role, groups: [gid] } }, groups: { gid: { name, members: [eposta, ...] } } }
+// directory/{eposta}: kişinin görebileceği gruplar ve kişiler (yalnızca o kişi okur, yönetici yazar)
+// Herkes yalnızca aynı gruptaki kişileri görür ve onlarla yazışır. Yöneticiler herkesle yazışabilir.
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    function signedIn() { return request.auth != null && request.auth.token.email_verified == true; }
+    // Hesapları yalnızca yönetici açar (Firebase'de dışarıdan kayıt kapalı), bu yüzden e-posta doğrulaması aranmaz.
+    function signedIn() { return request.auth != null && request.auth.token.email != null; }
     function myEmail() { return request.auth.token.email.lower(); }
     // Her zaman yönetici olan hesaplar (docs/config.js içindeki BOOT_ADMINS ile AYNI olmalı)
-    function isBoot() { return signedIn() && myEmail() in ['mustafakiliclar90@gmail.com']; }
-    function accessDoc() { return get(/databases/$(database)/documents/config/access).data.members; }
-    function isMember() { return isBoot() || (signedIn() && exists(/databases/$(database)/documents/config/access) && myEmail() in accessDoc()); }
-    function isAdmin() { return isBoot() || (isMember() && accessDoc()[myEmail()].role == 'admin'); }
-    function isPerson(e) { return e is string && (e in ['mustafakiliclar90@gmail.com'] || e in accessDoc()); }
-    // Mesajın alıcısı ve katılımcı listesi tutarlı mı?
+    function bootList() { return ['mustafakiliclar90@gmail.com']; }
+    function isBoot() { return signedIn() && myEmail() in bootList(); }
+    function accPath() { return /databases/$(database)/documents/config/access; }
+    function acc() { return get(accPath()).data; }
+    function people() { return acc().members; }
+    function groups() { return acc().get('groups', {}); }
+    function isMember() { return isBoot() || (signedIn() && exists(accPath()) && myEmail() in people()); }
+    function isAdmin() { return isBoot() || (isMember() && people()[myEmail()].role == 'admin'); }
+    function isPerson(e) { return e is string && (e in bootList() || e in people()); }
+    function isAdminEmail(e) { return e in bootList() || people()[e].role == 'admin'; }
+    // İki kişi yazışabilir mi? (biri yönetici ya da en az bir ortak grup)
+    function canTalk(to) {
+      return isAdmin() || isAdminEmail(to)
+        || people()[myEmail()].get('groups', []).hasAny(people()[to].get('groups', []));
+    }
+    // Grup mesajı: gönderen grupta olmalı, alıcı listesi grubun üye listesiyle birebir aynı olmalı
+    function validGroup(d) {
+      return d.to is string && d.group is string && d.to == 'g:' + d.group
+        && d.group in groups()
+        && myEmail() in groups()[d.group].members
+        && d.participants == groups()[d.group].members;
+    }
+    function validDirect(d) {
+      return isPerson(d.to) && d.to != myEmail() && d.participants == [myEmail(), d.to] && canTalk(d.to);
+    }
     function validTarget(d) {
-      return (d.to == 'all' && d.participants == [])
-        || (isPerson(d.to) && d.to != myEmail() && d.participants == [myEmail(), d.to]);
+      return (d.keys().hasAny(['group']) && validGroup(d)) || (!d.keys().hasAny(['group']) && validDirect(d));
     }
 
     match /config/access {
-      allow read: if isMember();
-      allow create, update: if isAdmin() && request.resource.data.keys().hasOnly(['members']) && request.resource.data.members is map;
-      allow delete: if isBoot();
+      allow read: if isAdmin();
+      allow create, update: if isAdmin()
+        && request.resource.data.keys().hasOnly(['members', 'groups'])
+        && request.resource.data.members is map && request.resource.data.groups is map;
+      allow delete: if false;
+    }
+
+    match /directory/{email} {
+      allow read: if signedIn() && myEmail() == email;
+      allow write: if isAdmin();
     }
 
     match /messages/{id} {
-      allow read: if isMember() && (resource.data.to == 'all' || myEmail() in resource.data.participants);
+      allow read: if isMember() && myEmail() in resource.data.participants;
       allow create: if isMember()
         && request.resource.data.from == myEmail()
         && validTarget(request.resource.data)
         && request.resource.data.text is string && request.resource.data.text.size() <= 4000
         && request.resource.data.at is number;
       allow update: if false;
-      allow delete: if isMember() && (resource.data.from == myEmail() || (isAdmin() && resource.data.to == 'all'));
+      allow delete: if isMember() && (resource.data.from == myEmail() || (isAdmin() && resource.data.keys().hasAny(['group'])));
     }
 
     // Fotoğraf, dosya ve sesli mesajlar (en fazla ~1 MB, Firestore belge sınırı)
     match /msg_files/{id} {
-      allow read: if isMember() && (resource.data.to == 'all' || myEmail() in resource.data.participants);
+      allow read: if isMember() && myEmail() in resource.data.participants;
       allow create: if isMember()
         && request.resource.data.from == myEmail()
         && request.resource.data.uid == request.auth.uid
@@ -53,20 +81,21 @@ service cloud.firestore {
       allow read, write: if isMember() && request.auth.uid == uid;
     }
 
-    // Aramalar: bağlantı bilgileri yalnızca iki taraf arasında
+    // Aramalar: yalnızca yazışabilen iki kişi arasında
     match /calls/{id} {
       allow read: if isMember() && (resource.data.from == myEmail() || resource.data.to == myEmail());
       allow create: if isMember()
         && request.resource.data.from == myEmail()
         && isPerson(request.resource.data.to)
+        && request.resource.data.to != myEmail()
+        && canTalk(request.resource.data.to)
         && request.resource.data.participants == [myEmail(), request.resource.data.to];
       allow update: if isMember() && myEmail() in resource.data.participants
         && request.resource.data.from == resource.data.from && request.resource.data.to == resource.data.to;
       allow delete: if false;
 
       match /ice/{iceId} {
-        function call() { return get(/databases/$(database)/documents/calls/$(id)).data; }
-        allow read, create: if isMember() && myEmail() in call().participants;
+        allow read, create: if isMember() && myEmail() in get(/databases/$(database)/documents/calls/$(id)).data.participants;
         allow update, delete: if false;
       }
     }

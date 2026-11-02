@@ -13,7 +13,7 @@ export async function createBackend(firebaseConfig) {
   let fs;
   try { fs = F.initializeFirestore(app, { localCache: F.persistentLocalCache({ tabManager: F.persistentMultipleTabManager() }) }); }
   catch (e) { fs = F.getFirestore(app); }
-  const { collection, doc, onSnapshot, setDoc, updateDoc, deleteDoc, getDoc, query, where } = F;
+  const { collection, doc, onSnapshot, setDoc, updateDoc, deleteDoc, getDoc, query, where, writeBatch } = F;
   const lower = s => String(s || "").trim().toLowerCase();
   const toUser = u => u ? { uid: u.uid, email: lower(u.email), name: u.displayName || "", verified: !!u.emailVerified } : null;
   const changes = (snap, initial) => snap.docChanges({ includeMetadataChanges: true }).map(ch => ({
@@ -47,17 +47,27 @@ export async function createBackend(firebaseConfig) {
     async reloadUser() { if (!auth.currentUser) return null; await auth.currentUser.reload(); await auth.currentUser.getIdToken(true); return toUser(auth.currentUser); },
     logout: () => A.signOut(auth),
 
+    // Yöneticiler: tüm kişi ve grup listesi
     watchAccess(cb, err) {
-      return onSnapshot(doc(fs, "config", "access"), s => cb(s.exists() ? (s.data().members || {}) : {}), err);
+      return onSnapshot(doc(fs, "config", "access"), s => cb(s.exists() ? s.data() : { members: {}, groups: {} }), err);
     },
-    saveAccess: members => setDoc(doc(fs, "config", "access"), { members }),
+    // Herkes: yalnızca kendi görebileceği gruplar ve kişiler
+    watchDir(email, cb, err) {
+      return onSnapshot(doc(fs, "directory", email), s => cb(s.exists() ? s.data() : null), err);
+    },
+    // Kişi listesini ve herkesin rehberini tek seferde yazar
+    async saveAccess(access, dirs, removed) {
+      const b = writeBatch(fs);
+      b.set(doc(fs, "config", "access"), access);
+      Object.entries(dirs).forEach(([e, d]) => b.set(doc(fs, "directory", e), d));
+      (removed || []).forEach(e => b.delete(doc(fs, "directory", e)));
+      await b.commit();
+    },
 
     watchMessages(email, cb, err) {
-      const first = { a: true, b: true };
-      const h = k => s => { const ini = first[k]; first[k] = false; cb(changes(s, ini)); };
-      const u1 = onSnapshot(query(collection(fs, "messages"), where("to", "==", "all")), { includeMetadataChanges: true }, h("a"), err);
-      const u2 = onSnapshot(query(collection(fs, "messages"), where("participants", "array-contains", email)), { includeMetadataChanges: true }, h("b"), err);
-      return () => { u1(); u2(); };
+      let first = true;
+      return onSnapshot(query(collection(fs, "messages"), where("participants", "array-contains", email)), { includeMetadataChanges: true },
+        s => { const ini = first; first = false; cb(changes(s, ini)); }, err);
     },
     sendMessage(m) { const ref = doc(collection(fs, "messages")); fire(setDoc(ref, m)).catch(() => {}); return ref.id; },
     deleteMessage: id => deleteDoc(doc(fs, "messages", id)),
