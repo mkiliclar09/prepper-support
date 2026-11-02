@@ -1,0 +1,74 @@
+rules_version = '2';
+// Prepper Support — Firestore güvenlik kuralları
+// Kişi listesi: config/access belgesi → { members: { "eposta": { name, role } } }, role: "admin" | "member"
+// Listede olmayan hiç kimse hiçbir veriyi okuyamaz ve yazamaz.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() { return request.auth != null && request.auth.token.email_verified == true; }
+    function myEmail() { return request.auth.token.email.lower(); }
+    // Her zaman yönetici olan hesaplar (docs/config.js içindeki BOOT_ADMINS ile AYNI olmalı)
+    function isBoot() { return signedIn() && myEmail() in ['mustafakiliclar90@gmail.com']; }
+    function accessDoc() { return get(/databases/$(database)/documents/config/access).data.members; }
+    function isMember() { return isBoot() || (signedIn() && exists(/databases/$(database)/documents/config/access) && myEmail() in accessDoc()); }
+    function isAdmin() { return isBoot() || (isMember() && accessDoc()[myEmail()].role == 'admin'); }
+    function isPerson(e) { return e is string && (e in ['mustafakiliclar90@gmail.com'] || e in accessDoc()); }
+    // Mesajın alıcısı ve katılımcı listesi tutarlı mı?
+    function validTarget(d) {
+      return (d.to == 'all' && d.participants == [])
+        || (isPerson(d.to) && d.to != myEmail() && d.participants == [myEmail(), d.to]);
+    }
+
+    match /config/access {
+      allow read: if isMember();
+      allow create, update: if isAdmin() && request.resource.data.keys().hasOnly(['members']) && request.resource.data.members is map;
+      allow delete: if isBoot();
+    }
+
+    match /messages/{id} {
+      allow read: if isMember() && (resource.data.to == 'all' || myEmail() in resource.data.participants);
+      allow create: if isMember()
+        && request.resource.data.from == myEmail()
+        && validTarget(request.resource.data)
+        && request.resource.data.text is string && request.resource.data.text.size() <= 4000
+        && request.resource.data.at is number;
+      allow update: if false;
+      allow delete: if isMember() && (resource.data.from == myEmail() || (isAdmin() && resource.data.to == 'all'));
+    }
+
+    // Fotoğraf, dosya ve sesli mesajlar (en fazla ~1 MB, Firestore belge sınırı)
+    match /msg_files/{id} {
+      allow read: if isMember() && (resource.data.to == 'all' || myEmail() in resource.data.participants);
+      allow create: if isMember()
+        && request.resource.data.from == myEmail()
+        && request.resource.data.uid == request.auth.uid
+        && validTarget(request.resource.data)
+        && request.resource.data.data is string;
+      allow update: if false;
+      allow delete: if isMember() && (resource.data.from == myEmail() || isAdmin());
+    }
+
+    // Okundu bilgisi: herkes yalnızca kendi belgesini görür
+    match /reads/{uid} {
+      allow read, write: if isMember() && request.auth.uid == uid;
+    }
+
+    // Aramalar: bağlantı bilgileri yalnızca iki taraf arasında
+    match /calls/{id} {
+      allow read: if isMember() && (resource.data.from == myEmail() || resource.data.to == myEmail());
+      allow create: if isMember()
+        && request.resource.data.from == myEmail()
+        && isPerson(request.resource.data.to)
+        && request.resource.data.participants == [myEmail(), request.resource.data.to];
+      allow update: if isMember() && myEmail() in resource.data.participants
+        && request.resource.data.from == resource.data.from && request.resource.data.to == resource.data.to;
+      allow delete: if false;
+
+      match /ice/{iceId} {
+        function call() { return get(/databases/$(database)/documents/calls/$(id)).data; }
+        allow read, create: if isMember() && myEmail() in call().participants;
+        allow update, delete: if false;
+      }
+    }
+  }
+}

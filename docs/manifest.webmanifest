@@ -1,0 +1,17 @@
+{
+  "name": "Prepper Support",
+  "short_name": "Prepper",
+  "description": "Yalnızca davetli kişilerin kullanabildiği kapalı mesajlaşma ve arama uygulaması.",
+  "lang": "tr",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0e110c",
+  "theme_color": "#11140f",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "icons/maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
