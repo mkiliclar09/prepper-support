@@ -1,0 +1,299 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Sesle Mesaj Denemesi</title>
+<meta name="description" content="İki telefon arasında internetsiz, sesle kısa ve şifreli mesaj gönderme denemesi.">
+<meta name="theme-color" content="#11140f">
+<link rel="icon" href="icons/favicon.png">
+<style>
+:root{
+  --bg:#f4f2ec; --surface:#fffdf8; --surface-2:#ebe8df; --line:#dcd7ca;
+  --ink:#1b1d17; --ink-2:#4b4f43; --ink-3:#7b7f70;
+  --accent:#d9861c; --accent-ink:#1b1206; --accent-soft:#f6e3c6;
+  --ok:#3f8f4f; --bad:#c2412d; --warn:#b07a10;
+  --font:system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+  --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace; color-scheme:light;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --bg:#0e110c; --surface:#161a13; --surface-2:#1e2319; --line:#2c3325;
+  --ink:#eceee4; --ink-2:#b6bba8; --ink-3:#80866f;
+  --accent:#f0a33a; --accent-ink:#1b1206; --accent-soft:#3a2c14; --warn:#e0a531; color-scheme:dark;
+}}
+:root[data-theme="dark"]{
+  --bg:#0e110c; --surface:#161a13; --surface-2:#1e2319; --line:#2c3325;
+  --ink:#eceee4; --ink-2:#b6bba8; --ink-3:#80866f;
+  --accent:#f0a33a; --accent-ink:#1b1206; --accent-soft:#3a2c14; --warn:#e0a531; color-scheme:dark;
+}
+*{box-sizing:border-box}
+[hidden]{display:none!important}
+html,body{margin:0}
+body{background:var(--bg);color:var(--ink);font-family:var(--font);font-size:15px;line-height:1.45;-webkit-tap-highlight-color:transparent}
+button,input,select,textarea{font:inherit;color:inherit}
+button{cursor:pointer}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.num{font-family:var(--mono);font-variant-numeric:tabular-nums}
+.wrap{max-width:640px;margin:0 auto;padding:calc(14px + env(safe-area-inset-top)) 16px calc(28px + env(safe-area-inset-bottom))}
+header{display:flex;align-items:center;gap:12px;margin:4px 0 14px}
+header img{border-radius:10px}
+header h1{font-size:19px;margin:0;letter-spacing:-.01em}
+header p{margin:0;color:var(--ink-3);font-size:13px}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:16px;padding:16px;margin-bottom:12px}
+.card h2{font-size:13px;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-3);margin:0 0 12px;font-weight:700}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+label.f{display:grid;gap:5px;font-size:13px;font-weight:600;color:var(--ink-2)}
+label.f.full{grid-column:1/-1}
+input,select,textarea{background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:10px 12px;min-height:44px;width:100%}
+input:focus,select:focus,textarea:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+textarea{resize:vertical;min-height:72px}
+.note{font-size:12.5px;color:var(--ink-3);margin:8px 0 0}
+.row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.meta{font-size:12.5px;color:var(--ink-3);margin:6px 0 10px;display:flex;justify-content:space-between;gap:8px}
+.meta .over{color:var(--bad);font-weight:700}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;border:1px solid transparent;background:var(--accent);color:var(--accent-ink);font-weight:700;padding:11px 18px;border-radius:12px;min-height:46px}
+.btn:disabled{opacity:.5;cursor:default}
+.btn.ghost{background:transparent;border-color:var(--line);color:var(--ink);font-weight:600}
+.btn.wide{flex:1}
+.btn.on{background:var(--bad);color:#fff}
+.prog{height:6px;border-radius:3px;background:var(--surface-2);overflow:hidden;margin-top:12px}
+.prog i{display:block;height:100%;width:0;background:var(--accent);transition:width .1s linear}
+.stat{display:flex;align-items:center;gap:8px;font-size:14px;font-weight:600;margin:12px 0 8px}
+.dot{width:10px;height:10px;border-radius:50%;background:var(--ink-3);flex:none}
+.dot.live{background:var(--ok);animation:pulse 1.2s infinite}
+.dot.sig{background:var(--accent)}
+@keyframes pulse{50%{opacity:.35}}
+.bars{display:grid;grid-template-columns:repeat(20,1fr);gap:3px;align-items:end;height:64px;padding:6px;border-radius:10px;background:var(--bg);border:1px solid var(--line)}
+.bars i{display:block;background:var(--accent);border-radius:2px;height:2%;min-height:2px;transition:height .08s}
+.bars i.s{background:var(--ink-2)}
+.legend{display:flex;justify-content:space-between;font-size:11px;color:var(--ink-3);margin-top:4px;font-family:var(--mono)}
+.counts{display:flex;gap:16px;font-size:13px;color:var(--ink-2);margin-top:10px}
+.counts b{font-family:var(--mono);color:var(--ink)}
+.log{display:flex;flex-direction:column;gap:8px;margin-top:4px}
+.msg{border:1px solid var(--line);border-radius:12px;padding:10px 12px;background:var(--bg)}
+.msg p{margin:0 0 4px;white-space:pre-wrap;overflow-wrap:anywhere;font-size:15.5px}
+.msg small{color:var(--ink-3);font-size:12px;display:flex;gap:10px;flex-wrap:wrap}
+.msg.lock p{color:var(--warn)}
+.tag{font-size:11px;font-weight:700;padding:1px 7px;border-radius:99px;background:var(--accent-soft);color:var(--ink)}
+.empty{color:var(--ink-3);font-size:14px;margin:4px 0}
+ul.tips{margin:0;padding-left:18px;color:var(--ink-2);font-size:13.5px}
+ul.tips li{margin:4px 0}
+.toast{position:fixed;left:50%;bottom:calc(20px + env(safe-area-inset-bottom));transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:10px 16px;border-radius:12px;z-index:9;max-width:calc(100vw - 32px);font-size:14px}
+@media (max-width:420px){.grid{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <img src="icons/icon-192.png" width="40" height="40" alt="">
+    <div><h1>Sesle mesaj denemesi</h1><p>İnternetsiz · hoparlör ve mikrofonla · Prepper Support</p></div>
+  </header>
+
+  <section class="card" aria-labelledby="h-set">
+    <h2 id="h-set">Ayarlar · iki telefonda aynı olmalı</h2>
+    <div class="grid">
+      <label class="f">Ses bandı
+        <select id="band"><option value="low">Duyulur (1,5–4,5 kHz) · en güvenilir</option><option value="high">Yüksek (15–18 kHz) · daha az duyulur</option></select></label>
+      <label class="f">Hız
+        <select id="speed"><option value="fast">Hızlı</option><option value="normal" selected>Normal</option><option value="robust">Dayanıklı (gürültülü ortam)</option></select></label>
+      <label class="f full">Grup anahtarı (isteğe bağlı)
+        <input id="pass" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Boş bırakılırsa mesaj şifresiz gider"></label>
+    </div>
+    <p class="note">Anahtar girilirse mesaj şifrelenir; sesi yakalayan biri anahtarı bilmeden okuyamaz.</p>
+  </section>
+
+  <section class="card" aria-labelledby="h-send">
+    <h2 id="h-send">Gönder</h2>
+    <textarea id="text" maxlength="200" placeholder="Kısa bir mesaj yazın…">Toplanma noktasındayım, herkes iyi.</textarea>
+    <div class="meta"><span id="bytes"></span><span id="dur"></span></div>
+    <div class="row">
+      <button class="btn wide" id="send" type="button">Sesle gönder</button>
+      <button class="btn ghost" id="burst" type="button" title="Menzil ölçmek için: aynı mesajı numaralayarak 5 kez gönderir">5 kez gönder</button>
+    </div>
+    <div class="prog" aria-hidden="true"><i id="prog"></i></div>
+    <p class="note" id="sendNote">Telefonun sesini sonuna kadar açın. iPhone'da sessiz mod düğmesi kapalı olmalı.</p>
+  </section>
+
+  <section class="card" aria-labelledby="h-rx">
+    <h2 id="h-rx">Dinle</h2>
+    <button class="btn wide" id="listen" type="button" style="width:100%">Dinlemeyi başlat</button>
+    <div class="stat" role="status"><span class="dot" id="dot"></span><span id="state">Dinleme kapalı</span></div>
+    <div class="bars" id="bars" aria-hidden="true"></div>
+    <div class="legend"><span>veri tonları</span><span>başlangıç</span></div>
+    <div class="counts"><span>Alınan <b id="cOk">0</b></span><span>Bozuk <b id="cBad">0</b></span><span>Düzeltilen bayt <b id="cFix">0</b></span></div>
+  </section>
+
+  <section class="card" aria-labelledby="h-log">
+    <div class="row" style="justify-content:space-between"><h2 id="h-log" style="margin:0">Gelen mesajlar</h2><button class="btn ghost" id="clear" type="button" style="min-height:34px;padding:5px 12px;font-size:13px">Temizle</button></div>
+    <div class="log" id="log"><p class="empty">Henüz mesaj yok.</p></div>
+  </section>
+
+  <section class="card" aria-labelledby="h-tips">
+    <h2 id="h-tips">Nasıl denenir</h2>
+    <ul class="tips">
+      <li>Bu sayfayı iki telefonda açın. Birinde <b>Dinlemeyi başlat</b>'a basıp mikrofona izin verin.</li>
+      <li>Diğerinde mesajı yazıp <b>Sesle gönder</b>'e basın. 30–50 cm'den başlayın, sonra mesafeyi artırın.</li>
+      <li><b>5 kez gönder</b> ile her mesafede kaç mesajın ulaştığını sayın (Alınan / Bozuk).</li>
+      <li>"Düzeltilen bayt" sıfırdan büyükse sinyal zorlanıyor demektir; yakınlaşın, sesi açın ya da <b>Dayanıklı</b>'yı seçin.</li>
+      <li>Dinleyen telefonun ekranı açık kalsın. Gönderirken o telefonun dinlemesi kısa süre duraklar.</li>
+    </ul>
+  </section>
+</div>
+<div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+
+<script type="module">
+import { BANDS, SPEEDS, MAX_PAYLOAD, synth, frameSeconds, Receiver, keyFrom, seal, open } from "./ses-modem.js";
+const $ = s => document.querySelector(s);
+const enc = new TextEncoder(), dec = new TextDecoder();
+let ctx = null, mic = null, proc = null, rx = null, listening = false, sending = false, wake = null;
+let keyCache = { pass: null, key: null };
+const counts = { ok: 0, bad: 0, fix: 0 };
+let toastT; const toast = (m, ms = 3500) => { const t = $("#toast"); t.textContent = m; t.hidden = false; clearTimeout(toastT); toastT = setTimeout(() => t.hidden = true, ms); };
+const esc = s => String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+// ayarlar bu cihazda hatırlanır
+const PREF = "prepper-ses-ayar";
+try { const p = JSON.parse(localStorage.getItem(PREF) || "{}"); ["band", "speed", "pass"].forEach(k => { if (p[k] != null) $("#" + k).value = p[k]; }); } catch (e) {}
+const savePrefs = () => { try { localStorage.setItem(PREF, JSON.stringify({ band: $("#band").value, speed: $("#speed").value, pass: $("#pass").value })); } catch (e) {} };
+
+const bars = $("#bars"); bars.innerHTML = Array.from({ length: 20 }, (_, i) => `<i${i >= 18 ? ' class="s"' : ""}></i>`).join("");
+const barEls = [...bars.children];
+
+async function getKey() {
+  const p = $("#pass").value.trim(); if (!p) return null;
+  if (keyCache.pass !== p) keyCache = { pass: p, key: await keyFrom(p) };
+  return keyCache.key;
+}
+const opts = () => ({ band: $("#band").value, T: SPEEDS[$("#speed").value] });
+
+function updateMeta() {
+  const n = enc.encode($("#text").value).length, encd = !!$("#pass").value.trim(), max = MAX_PAYLOAD - (encd ? 20 : 0);
+  $("#bytes").innerHTML = `<span class="${n > max ? "over" : ""}">${n} / ${max} bayt</span>${encd ? " · şifreli" : ""}`;
+  $("#dur").textContent = "yaklaşık " + frameSeconds(Math.min(n, max) + (encd ? 20 : 0), opts().T).toFixed(1).replace(".", ",") + " sn";
+  $("#send").disabled = $("#burst").disabled = sending || !n || n > max;
+}
+["#text", "#pass"].forEach(s => $(s).addEventListener("input", () => { updateMeta(); savePrefs(); }));
+["#band", "#speed", "#pass"].forEach(s => $(s).addEventListener("change", () => { savePrefs(); updateMeta(); if (listening) restartRx(); }));
+updateMeta();
+
+async function audio() {
+  if (!ctx) ctx = new (window.AudioContext || window.webkitAudioContext)();
+  if (ctx.state !== "running") await ctx.resume();
+  return ctx;
+}
+
+/* ---------- gönderme ---------- */
+async function play(samples) {
+  const c = await audio();
+  const buf = c.createBuffer(1, samples.length, c.sampleRate); buf.copyToChannel ? buf.copyToChannel(samples, 0) : buf.getChannelData(0).set(samples);
+  const src = c.createBufferSource(); src.buffer = buf; src.connect(c.destination);
+  const t0 = c.currentTime + 0.05, dur = buf.duration; src.start(t0);
+  await new Promise(res => {
+    const tick = () => { const p = Math.min(1, Math.max(0, (c.currentTime - t0) / dur)); $("#prog").style.width = (p * 100) + "%"; if (p < 1) requestAnimationFrame(tick); };
+    tick(); src.onended = res;
+  });
+  $("#prog").style.width = "0";
+}
+async function sendText(text) {
+  const c = await audio();
+  let payload = enc.encode(text), flags = 0;
+  const key = await getKey();
+  if (key) { payload = await seal(key, payload); flags = 1; }
+  await play(synth(payload, { sampleRate: c.sampleRate, ...opts(), flags }));
+}
+async function sendFlow(times) {
+  const text = $("#text").value.trim(); if (!text) return;
+  sending = true; updateMeta();
+  const wasListening = listening; if (wasListening) await stopRx(true);
+  try {
+    for (let i = 1; i <= times; i++) {
+      $("#sendNote").textContent = times > 1 ? `Gönderiliyor ${i}/${times}…` : "Gönderiliyor…";
+      await sendText(times > 1 ? `#${i} ${text}` : text);
+      if (i < times) await new Promise(r => setTimeout(r, 700));
+    }
+    $("#sendNote").textContent = times > 1 ? `${times} mesaj gönderildi. Dinleyen telefonda Alınan sayısına bakın.` : "Gönderildi.";
+  } catch (e) { toast("Gönderilemedi: " + (e.message || e)); $("#sendNote").textContent = "Gönderilemedi."; }
+  sending = false; updateMeta();
+  if (wasListening) startRx().catch(() => {});
+}
+$("#send").onclick = () => sendFlow(1);
+$("#burst").onclick = () => sendFlow(5);
+
+/* ---------- dinleme ---------- */
+function makeRx() {
+  rx = new Receiver({
+    sampleRate: ctx.sampleRate, ...opts(),
+    onFrame: f => onFrame(f).catch(() => {}),
+    onBad: () => { counts.bad++; paintCounts(); },
+    onLevels: lv => paintLevels(lv)
+  });
+}
+let lastSig = 0;
+function paintLevels(lv) {
+  let m = 1e-12; for (const v of lv) m = Math.max(m, v);
+  const total = lv.reduce((a, b) => a + b, 0);
+  lv.forEach((v, i) => { barEls[i].style.height = Math.max(2, 100 * Math.sqrt(v / m) * Math.min(1, Math.log10(1 + total * 1e5) / 3)) + "%"; });
+  if (total > 2e-4 && m / total > 0.3) lastSig = performance.now();
+  const sig = performance.now() - lastSig < 600;
+  $("#dot").className = "dot " + (sig ? "sig" : "live");
+  $("#state").textContent = sig ? "Sinyal algılanıyor…" : "Dinleniyor";
+}
+function paintCounts() { $("#cOk").textContent = counts.ok; $("#cBad").textContent = counts.bad; $("#cFix").textContent = counts.fix; }
+async function onFrame(f) {
+  counts.ok++; counts.fix += f.fixed; paintCounts();
+  let text, locked = false, encd = !!(f.flags & 1);
+  if (encd) {
+    const key = await getKey();
+    if (!key) { text = "Şifreli mesaj geldi. Okumak için grup anahtarını girin."; locked = true; }
+    else { try { text = dec.decode(await open(key, f.payload)); } catch (e) { text = "Şifreli mesaj açılamadı: grup anahtarı farklı."; locked = true; } }
+  } else text = dec.decode(f.payload);
+  const log = $("#log"); const em = log.querySelector(".empty"); if (em) em.remove();
+  const el = document.createElement("div"); el.className = "msg" + (locked ? " lock" : "");
+  el.innerHTML = `<p>${esc(text)}</p><small><span class="num">${new Date().toLocaleTimeString("tr-TR")}</span>${encd ? '<span class="tag">şifreli</span>' : ""}<span>${f.fixed ? f.fixed + " bayt düzeltildi" : "hatasız"}</span></small>`;
+  log.prepend(el);
+  if (navigator.vibrate) navigator.vibrate(120);
+}
+$("#clear").onclick = () => { $("#log").innerHTML = '<p class="empty">Henüz mesaj yok.</p>'; counts.ok = counts.bad = counts.fix = 0; paintCounts(); };
+
+async function startRx() {
+  const c = await audio();
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) throw new Error("Bu tarayıcı mikrofonu desteklemiyor (sayfa https ile açılmalı).");
+  // gürültü bastırma ve otomatik ses ayarı tonları bozar, kapatılır
+  mic = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount: 1 } });
+  const src = c.createMediaStreamSource(mic);
+  proc = c.createScriptProcessor(4096, 1, 1);
+  const mute = c.createGain(); mute.gain.value = 0;
+  makeRx();
+  proc.onaudioprocess = e => { if (rx) rx.push(new Float32Array(e.inputBuffer.getChannelData(0))); };
+  src.connect(proc); proc.connect(mute); mute.connect(c.destination);
+  proc._src = src; proc._mute = mute;
+  listening = true; paintListen();
+  try { if ("wakeLock" in navigator) wake = await navigator.wakeLock.request("screen"); } catch (e) {}
+}
+async function stopRx(pause) {
+  try { if (proc) { proc.onaudioprocess = null; proc._src.disconnect(); proc.disconnect(); proc._mute.disconnect(); } } catch (e) {}
+  try { mic && mic.getTracks().forEach(t => t.stop()); } catch (e) {}
+  proc = null; mic = null; rx = null; listening = false;
+  try { wake && wake.release(); } catch (e) {} wake = null;
+  paintListen(pause);
+  barEls.forEach(b => b.style.height = "2%");
+}
+async function restartRx() { await stopRx(); try { await startRx(); } catch (e) { toast(e.message || String(e)); } }
+function paintListen(pause) {
+  $("#listen").textContent = listening ? "Dinlemeyi durdur" : "Dinlemeyi başlat";
+  $("#listen").classList.toggle("on", listening);
+  if (!listening) { $("#dot").className = "dot"; $("#state").textContent = pause ? "Gönderirken dinleme duraklatıldı" : "Dinleme kapalı"; }
+  else { $("#dot").className = "dot live"; $("#state").textContent = "Dinleniyor"; }
+}
+$("#listen").onclick = async () => {
+  if (listening) return stopRx();
+  try { await startRx(); }
+  catch (e) { toast(e && e.name === "NotAllowedError" ? "Mikrofon izni verilmedi. Tarayıcı ayarlarından bu site için mikrofona izin verin." : (e.message || String(e)), 6000); }
+};
+document.addEventListener("visibilitychange", async () => { if (!document.hidden && wake === null && listening) { try { wake = await navigator.wakeLock.request("screen"); } catch (e) {} } });
+// test için: sayfa ?test ile açılırsa dinleme otomatik başlar
+if (new URLSearchParams(location.search).has("autolisten")) startRx().catch(e => toast(e.message));
+window.__ses = { counts, sendText };
+</script>
+</body>
+</html>
